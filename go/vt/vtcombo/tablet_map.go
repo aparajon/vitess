@@ -42,7 +42,9 @@ import (
 	"vitess.io/vitess/go/vt/vttablet/queryservice"
 	"vitess.io/vitess/go/vt/vttablet/tabletconn"
 	"vitess.io/vitess/go/vt/vttablet/tabletmanager"
+	"vitess.io/vitess/go/vt/vttablet/tabletmanager/vreplication"
 	"vitess.io/vitess/go/vt/vttablet/tabletserver"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/tabletenv"
 	"vitess.io/vitess/go/vt/vttablet/tmclient"
 	"vitess.io/vitess/go/vt/wrangler"
 
@@ -110,6 +112,11 @@ func CreateTablet(
 		MysqlDaemon:         mysqld,
 		DBConfigs:           dbcfgs,
 		QueryServiceControl: controller,
+	}
+	// Initialize VREngine for primary tablets so that vreplication-based
+	// online DDL works in vtcombo (requires VReplicationExec/WaitForPos).
+	if tabletType == topodatapb.TabletType_PRIMARY {
+		tm.VREngine = vreplication.NewEngine(env, tabletenv.NewDefaultConfig(), ts, cell, mysqld, controller.LagThrottler())
 	}
 	tablet := &topodatapb.Tablet{
 		Alias: alias,
@@ -990,6 +997,9 @@ func (itmc *internalTabletManagerClient) VReplicationExec(ctx context.Context, t
 	if !ok {
 		return nil, fmt.Errorf("tmclient: cannot find tablet %v", tablet.Alias.Uid)
 	}
+	if t.tm.VREngine == nil {
+		return nil, fmt.Errorf("tmclient: VREngine not initialized on tablet %v", tablet.Alias.Uid)
+	}
 	return t.tm.VReplicationExec(ctx, query)
 }
 
@@ -997,6 +1007,9 @@ func (itmc *internalTabletManagerClient) VReplicationWaitForPos(ctx context.Cont
 	t, ok := tabletMap[tablet.Alias.Uid]
 	if !ok {
 		return fmt.Errorf("tmclient: cannot find tablet %v", tablet.Alias.Uid)
+	}
+	if t.tm.VREngine == nil {
+		return fmt.Errorf("tmclient: VREngine not initialized on tablet %v", tablet.Alias.Uid)
 	}
 	return t.tm.VReplicationWaitForPos(ctx, id, pos)
 }
