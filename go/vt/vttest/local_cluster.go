@@ -165,6 +165,11 @@ type Config struct {
 
 	// Set the planner to fail on scatter queries
 	NoScatter bool
+
+	// MigrationCheckInterval controls how often the online DDL executor
+	// checks for pending migrations. Default is 1 minute; lower values
+	// (e.g. 5s) make online DDL tests faster.
+	MigrationCheckInterval time.Duration
 }
 
 // InitSchemas is a shortcut for tests that just want to setup a single

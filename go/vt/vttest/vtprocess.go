@@ -285,6 +285,10 @@ func VtcomboProcess(environment Environment, args *Config, mysql MySQLManager) (
 		vt.ExtraArgs = append(vt.ExtraArgs, fmt.Sprintf("--gateway-initial-tablet-timeout=%v", args.VtgateGatewayInitialTabletTimeout))
 	}
 
+	if args.MigrationCheckInterval > 0 {
+		vt.ExtraArgs = append(vt.ExtraArgs, fmt.Sprintf("--migration-check-interval=%v", args.MigrationCheckInterval))
+	}
+
 	vt.ExtraArgs = append(vt.ExtraArgs, QueryServerArgs...)
 	vt.ExtraArgs = append(vt.ExtraArgs, environment.VtcomboArguments()...)
 
