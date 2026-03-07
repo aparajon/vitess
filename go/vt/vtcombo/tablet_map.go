@@ -985,12 +985,20 @@ func (itmc *internalTabletManagerClient) ValidateVReplicationPermissions(context
 	return nil, errors.New("not implemented in vtcombo")
 }
 
-func (itmc *internalTabletManagerClient) VReplicationExec(context.Context, *topodatapb.Tablet, string) (*querypb.QueryResult, error) {
-	return nil, errors.New("not implemented in vtcombo")
+func (itmc *internalTabletManagerClient) VReplicationExec(ctx context.Context, tablet *topodatapb.Tablet, query string) (*querypb.QueryResult, error) {
+	t, ok := tabletMap[tablet.Alias.Uid]
+	if !ok {
+		return nil, fmt.Errorf("tmclient: cannot find tablet %v", tablet.Alias.Uid)
+	}
+	return t.tm.VReplicationExec(ctx, query)
 }
 
-func (itmc *internalTabletManagerClient) VReplicationWaitForPos(context.Context, *topodatapb.Tablet, int32, string) error {
-	return errors.New("not implemented in vtcombo")
+func (itmc *internalTabletManagerClient) VReplicationWaitForPos(ctx context.Context, tablet *topodatapb.Tablet, id int32, pos string) error {
+	t, ok := tabletMap[tablet.Alias.Uid]
+	if !ok {
+		return fmt.Errorf("tmclient: cannot find tablet %v", tablet.Alias.Uid)
+	}
+	return t.tm.VReplicationWaitForPos(ctx, id, pos)
 }
 
 func (itmc *internalTabletManagerClient) UpdateVReplicationWorkflow(context.Context, *topodatapb.Tablet, *tabletmanagerdatapb.UpdateVReplicationWorkflowRequest) (*tabletmanagerdatapb.UpdateVReplicationWorkflowResponse, error) {
