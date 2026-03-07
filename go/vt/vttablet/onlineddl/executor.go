@@ -295,6 +295,7 @@ func (e *Executor) Open() error {
 		e.execQuery = e.executeQuery
 	}
 
+	log.Info(fmt.Sprintf("onlineDDL Executor Open(): keyspace=%s shard=%s dbName=%s config.DB.DBName=%s", e.keyspace, e.shard, e.dbName, e.env.Config().DB.DBName))
 	e.pool.Open(e.env.Config().DB.AppWithDB(), e.env.Config().DB.DbaWithDB(), e.env.Config().DB.AppDebugWithDB())
 	e.ticks.Start(e.onMigrationCheckTick)
 	e.triggerNextCheckInterval()
@@ -465,6 +466,7 @@ func (e *Executor) getCreateTableStatement(ctx context.Context, tableName string
 // executeDirectly runs a DDL query directly on the backend MySQL server.
 // This is primarily used for CREATE/DROP/RENAME TABLE statements.
 func (e *Executor) executeDirectly(ctx context.Context, onlineDDL *schema.OnlineDDL, acceptableMySQLErrorCodes ...sqlerror.ErrorCode) (acceptableErrorCodeFound bool, err error) {
+	log.Info(fmt.Sprintf("onlineDDL executeDirectly: keyspace=%s shard=%s dbName=%s config.DB.DBName=%s table=%s", e.keyspace, e.shard, e.dbName, e.env.Config().DB.DBName, onlineDDL.Table))
 	conn, err := dbconnpool.NewDBConnection(ctx, e.env.Config().DB.DbaWithDB())
 	if err != nil {
 		return false, err

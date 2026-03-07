@@ -133,6 +133,7 @@ func CreateTablet(
 	if err := tm.Start(tablet, nil); err != nil {
 		return err
 	}
+	log.Info(fmt.Sprintf("CreateTablet: keyspace=%s shard=%s dbname=%s tm.DBConfigs.DBName=%s", keyspace, shard, dbname, tm.DBConfigs.DBName))
 
 	if tabletType == topodatapb.TabletType_PRIMARY {
 		// Semi-sync has to be set to false, since we have 1 single backing MySQL
