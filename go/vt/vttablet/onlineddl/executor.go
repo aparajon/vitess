@@ -1539,7 +1539,7 @@ func (e *Executor) readMigration(ctx context.Context, uuid string) (onlineDDL *s
 
 // readPendingMigrationsUUIDs returns UUIDs for migrations in pending state (queued/ready/running)
 func (e *Executor) readPendingMigrationsUUIDs(ctx context.Context) (uuids []string, err error) {
-	r, err := e.execQuery(ctx, sqlSelectPendingMigrations)
+	r, err := e.execQuery(ctx, fmt.Sprintf(sqlSelectPendingMigrations, e.keyspace, e.shard))
 	if err != nil {
 		return uuids, err
 	}
@@ -1739,7 +1739,7 @@ func (e *Executor) scheduleNextMigration(ctx context.Context) error {
 
 	var onlyScheduleOneMigration sync.Once
 
-	r, err := e.execQuery(ctx, sqlSelectQueuedMigrations)
+	r, err := e.execQuery(ctx, fmt.Sprintf(sqlSelectQueuedMigrations, e.keyspace, e.shard))
 	if err != nil {
 		return vterrors.Wrapf(err, "in scheduleNextMigration()")
 	}
@@ -1943,7 +1943,7 @@ func (e *Executor) reviewQueuedMigrations(ctx context.Context) error {
 	e.migrationMutex.Lock()
 	defer e.migrationMutex.Unlock()
 
-	r, err := e.execQuery(ctx, sqlSelectQueuedUnreviewedMigrations)
+	r, err := e.execQuery(ctx, fmt.Sprintf(sqlSelectQueuedUnreviewedMigrations, e.keyspace, e.shard))
 	if err != nil {
 		return err
 	}
@@ -1979,7 +1979,7 @@ func (e *Executor) validateMigrationRevertible(ctx context.Context, revertMigrat
 	}
 	{
 		// Validation: see if there's a pending migration on this table:
-		r, err := e.execQuery(ctx, sqlSelectPendingMigrations)
+		r, err := e.execQuery(ctx, fmt.Sprintf(sqlSelectPendingMigrations, e.keyspace, e.shard))
 		if err != nil {
 			return err
 		}
@@ -2855,7 +2855,7 @@ func (e *Executor) getNonConflictingMigration(ctx context.Context) (*schema.Onli
 	if err != nil {
 		return nil, err
 	}
-	r, err := e.execQuery(ctx, sqlSelectReadyMigrations)
+	r, err := e.execQuery(ctx, fmt.Sprintf(sqlSelectReadyMigrations, e.keyspace, e.shard))
 	if err != nil {
 		return nil, err
 	}
@@ -3172,7 +3172,7 @@ func (e *Executor) reviewRunningMigrations(ctx context.Context) (countRunnning i
 		}
 	}
 
-	r, err := e.execQuery(ctx, sqlSelectRunningMigrations)
+	r, err := e.execQuery(ctx, fmt.Sprintf(sqlSelectRunningMigrations, e.keyspace, e.shard))
 	if err != nil {
 		return countRunnning, cancellable, err
 	}
@@ -3382,7 +3382,7 @@ func (e *Executor) monitorStaleMigrations(ctx context.Context) error {
 
 	var maxStaleMinutes int64
 
-	query, err := sqlparser.ParseAndBind(sqlSelectStaleMigrations,
+	query, err := sqlparser.ParseAndBind(fmt.Sprintf(sqlSelectStaleMigrations, e.keyspace, e.shard),
 		sqltypes.Int64BindVariable(staleMigrationWarningMinutes),
 	)
 	if err != nil {
@@ -3417,7 +3417,7 @@ func (e *Executor) reviewStaleMigrations(ctx context.Context) error {
 	e.migrationMutex.Lock()
 	defer e.migrationMutex.Unlock()
 
-	query, err := sqlparser.ParseAndBind(sqlSelectStaleMigrations,
+	query, err := sqlparser.ParseAndBind(fmt.Sprintf(sqlSelectStaleMigrations, e.keyspace, e.shard),
 		sqltypes.Int64BindVariable(staleMigrationFailMinutes),
 	)
 	if err != nil {
@@ -4473,7 +4473,7 @@ func (e *Executor) LaunchMigrations(ctx context.Context) (result *sqltypes.Resul
 	if err != nil {
 		return result, err
 	}
-	r, err := e.execQuery(ctx, sqlSelectQueuedMigrations)
+	r, err := e.execQuery(ctx, fmt.Sprintf(sqlSelectQueuedMigrations, e.keyspace, e.shard))
 	if err != nil {
 		return result, err
 	}
@@ -4540,7 +4540,7 @@ func (e *Executor) submitCallbackIfNonConflicting(
 		e.migrationMutex.Lock()
 		defer e.migrationMutex.Unlock()
 
-		rs, err := e.execQuery(ctx, sqlSelectPendingMigrations)
+		rs, err := e.execQuery(ctx, fmt.Sprintf(sqlSelectPendingMigrations, e.keyspace, e.shard))
 		if err != nil {
 			return err
 		}

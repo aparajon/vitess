@@ -42,6 +42,9 @@ const (
 		%a, %a, %a, %a, %a, %a, %a, %a, %a, NOW(6), %a, %a, %a, %a, %a, %a, %a, %a, %a, %a
 	)`
 
+	// sqlSelectQueuedMigrations uses %s placeholders for keyspace and shard.
+	// In vtcombo, all tablets share the same _vt.schema_migrations table, so
+	// without these filters an executor can pick up migrations from other keyspaces.
 	sqlSelectQueuedMigrations = `SELECT
 			migration_uuid,
 			ddl_action,
@@ -54,6 +57,7 @@ const (
 		WHERE
 			migration_status='queued'
 			AND reviewed_timestamp IS NOT NULL
+			AND keyspace='%s' AND shard='%s'
 		ORDER BY id
 	`
 	sqlUpdateMySQLTable = `UPDATE _vt.schema_migrations
@@ -338,6 +342,7 @@ const (
 		FROM _vt.schema_migrations
 		WHERE
 			migration_status='running'
+			AND keyspace='%s' AND shard='%s'
 		ORDER BY id
 	`
 	sqlSelectCompleteMigrationsOnTable = `SELECT
@@ -369,6 +374,7 @@ const (
 		FROM _vt.schema_migrations
 		WHERE
 			migration_status='running'
+			AND keyspace='%s' AND shard='%s'
 			AND liveness_timestamp < NOW() - INTERVAL %a MINUTE
 		ORDER BY id
 	`
@@ -392,6 +398,7 @@ const (
 		FROM _vt.schema_migrations
 		WHERE
 			migration_status IN ('queued', 'ready', 'running')
+			AND keyspace='%s' AND shard='%s'
 		ORDER BY id
 	`
 	sqlSelectQueuedUnreviewedMigrations = `SELECT
@@ -400,6 +407,7 @@ const (
 		WHERE
 			migration_status='queued'
 			AND reviewed_timestamp IS NULL
+			AND keyspace='%s' AND shard='%s'
 		ORDER BY id
 	`
 	sqlSelectUncollectedArtifacts = `SELECT
@@ -480,6 +488,7 @@ const (
 		FROM _vt.schema_migrations
 		WHERE
 			migration_status='ready'
+			AND keyspace='%s' AND shard='%s'
 		ORDER BY id
 	`
 	selSelectCountFKParentConstraints = `
