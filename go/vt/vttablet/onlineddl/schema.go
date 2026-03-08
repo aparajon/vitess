@@ -375,7 +375,7 @@ const (
 		WHERE
 			migration_status='running'
 			AND keyspace='%s' AND shard='%s'
-			AND liveness_timestamp < NOW() - INTERVAL %a MINUTE
+			AND liveness_timestamp < NOW() - INTERVAL %%a MINUTE
 		ORDER BY id
 	`
 	sqlSelectFailedCancelledMigrationsInContextBeforeMigration = `SELECT
