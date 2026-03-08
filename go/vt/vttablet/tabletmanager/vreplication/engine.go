@@ -162,6 +162,7 @@ func (vre *Engine) InitDBConfig(dbcfgs *dbconfigs.DBConfigs) {
 		return
 	}
 	vre.sidecarDBName = sidecar.GetName()
+	log.Info(fmt.Sprintf("VReplication InitDBConfig: sidecarDBName=%s, dbName=%s", vre.sidecarDBName, dbcfgs.DBName))
 	vre.dbClientFactoryFiltered = func() binlogplayer.DBClient {
 		return binlogplayer.NewDBClientWithSidecarName(dbcfgs.FilteredWithDB(), vre.env.Parser(), vre.sidecarDBName)
 	}
@@ -400,16 +401,19 @@ func (vre *Engine) exec(query string, runAsAdmin bool) (*sqltypes.Result, error)
 	// replicated by another vreplication. This can happen when
 	// we reverse replication.
 	sidecarIdent := "`" + vre.sidecarDBName + "`"
+	log.Info(fmt.Sprintf("VReplication exec: sidecarDBName=%s, query=%s", vre.sidecarDBName, query))
 	if _, err := dbClient.ExecuteFetch("use "+sidecarIdent, 1); err != nil {
 		return nil, err
 	}
 
 	switch plan.opcode {
 	case insertQuery:
+		log.Info(fmt.Sprintf("VReplication INSERT: plan.query=%s", plan.query))
 		qr, err := dbClient.ExecuteFetch(plan.query, 1)
 		if err != nil {
 			return nil, err
 		}
+		log.Info(fmt.Sprintf("VReplication INSERT result: InsertID=%d, RowsAffected=%d", qr.InsertID, qr.RowsAffected))
 		if qr.InsertID == 0 {
 			return nil, errors.New("insert failed to generate an id")
 		}
@@ -907,11 +911,19 @@ func (vre *Engine) removeController(id int32) {
 }
 
 func readRow(dbClient binlogplayer.DBClient, id int32) (map[string]string, error) {
-	qr, err := dbClient.ExecuteFetch(fmt.Sprintf("select * from _vt.vreplication where id = %d", id), 10)
+	query := fmt.Sprintf("select * from _vt.vreplication where id = %d", id)
+	log.Info(fmt.Sprintf("readRow: query=%s, dbClient type=%T", query, dbClient))
+	qr, err := dbClient.ExecuteFetch(query, 10)
 	if err != nil {
 		return nil, err
 	}
+	log.Info(fmt.Sprintf("readRow: got %d rows, %d fields", len(qr.Rows), len(qr.Fields)))
 	if len(qr.Rows) != 1 {
+		// Also try a raw count for debugging
+		countQR, countErr := dbClient.ExecuteFetch("select count(*) as cnt from _vt.vreplication", 10)
+		if countErr == nil && len(countQR.Rows) > 0 {
+			log.Info(fmt.Sprintf("readRow DEBUG: total rows in vreplication table: %s", countQR.Rows[0][0].ToString()))
+		}
 		return nil, fmt.Errorf("unexpected number of rows: %v", qr)
 	}
 	if len(qr.Fields) != len(qr.Rows[0]) {
