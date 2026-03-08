@@ -170,6 +170,11 @@ type Config struct {
 	// checks for pending migrations. Default is 1 minute; lower values
 	// (e.g. 5s) make online DDL tests faster.
 	MigrationCheckInterval time.Duration
+
+	// PerShardSidecar gives each shard its own sidecar database instead of
+	// sharing _vt. Required when multiple shards share a single MySQL instance
+	// to avoid conflicts in schema_migrations and vreplication tables.
+	PerShardSidecar bool
 }
 
 // InitSchemas is a shortcut for tests that just want to setup a single

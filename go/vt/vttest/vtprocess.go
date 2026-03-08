@@ -289,6 +289,10 @@ func VtcomboProcess(environment Environment, args *Config, mysql MySQLManager) (
 		vt.ExtraArgs = append(vt.ExtraArgs, fmt.Sprintf("--migration-check-interval=%v", args.MigrationCheckInterval))
 	}
 
+	if args.PerShardSidecar {
+		vt.ExtraArgs = append(vt.ExtraArgs, "--per-shard-sidecar")
+	}
+
 	vt.ExtraArgs = append(vt.ExtraArgs, QueryServerArgs...)
 	vt.ExtraArgs = append(vt.ExtraArgs, environment.VtcomboArguments()...)
 

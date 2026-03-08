@@ -77,6 +77,12 @@ type comboTablet struct {
 // tabletMap maps the tablet uid to the tablet record
 var tabletMap map[uint32]*comboTablet
 
+// PerShardSidecar controls whether each shard gets its own sidecar database
+// (e.g. _vt_ks_shard) instead of sharing the default _vt. This is needed in
+// vtcombo where all shards share a single MySQL instance, to avoid conflicts
+// in tables like schema_migrations and vreplication.
+var PerShardSidecar bool
+
 // CreateTablet creates an individual tablet, with its tm, and adds
 // it to the map. If it's a primary tablet, it also issues a TER.
 func CreateTablet(
@@ -347,12 +353,14 @@ func CreateKs(
 			return 0, fmt.Errorf("CreateShard(%v:%v) failed: %v", keyspace, shard, err)
 		}
 
-		// Set shard-specific sidecar DB name in keyspace topo record so that
-		// each shard's tablets get their own sidecar database, avoiding
-		// conflicts when multiple shards share a single MySQL instance.
-		sidecarName := shardSidecarDBName(keyspace, shard)
-		if err := setKeyspaceSidecarDBName(ctx, ts, keyspace, sidecarName); err != nil {
-			return 0, fmt.Errorf("set sidecar DB name for %v/%v: %v", keyspace, shard, err)
+		if PerShardSidecar {
+			// Set shard-specific sidecar DB name in keyspace topo record so that
+			// each shard's tablets get their own sidecar database, avoiding
+			// conflicts when multiple shards share a single MySQL instance.
+			sidecarName := shardSidecarDBName(keyspace, shard)
+			if err := setKeyspaceSidecarDBName(ctx, ts, keyspace, sidecarName); err != nil {
+				return 0, fmt.Errorf("set sidecar DB name for %v/%v: %v", keyspace, shard, err)
+			}
 		}
 
 		for _, cell := range tpb.Cells {

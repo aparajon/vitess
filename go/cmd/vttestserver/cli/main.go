@@ -233,6 +233,8 @@ func New() (cmd *cobra.Command) {
 
 	utils.SetFlagDurationVar(cmd.Flags(), &config.MigrationCheckInterval, "migration-check-interval", 0, "How often the online DDL executor checks for pending migrations (passed to vtcombo). 0 uses vtcombo default (1m).")
 
+	utils.SetFlagBoolVar(cmd.Flags(), &config.PerShardSidecar, "per-shard-sidecar", false, "Give each shard its own sidecar database instead of sharing _vt. Required when multiple shards share a single MySQL instance to avoid conflicts in schema_migrations and vreplication tables.")
+
 	acl.RegisterFlags(cmd.Flags())
 
 	return cmd
