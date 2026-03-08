@@ -1743,6 +1743,9 @@ func (e *Executor) scheduleNextMigration(ctx context.Context) error {
 	if err != nil {
 		return vterrors.Wrapf(err, "in scheduleNextMigration()")
 	}
+	if len(r.Named().Rows) > 0 {
+		log.Info(fmt.Sprintf("scheduleNextMigration: keyspace=%s shard=%s found %d reviewed queued migrations", e.keyspace, e.shard, len(r.Named().Rows)))
+	}
 	for _, row := range r.Named().Rows {
 		uuid := row["migration_uuid"].ToString()
 
@@ -1948,9 +1951,14 @@ func (e *Executor) reviewQueuedMigrations(ctx context.Context) error {
 		return err
 	}
 
+	if len(r.Named().Rows) > 0 {
+		log.Info(fmt.Sprintf("reviewQueuedMigrations: keyspace=%s shard=%s found %d unreviewed migrations", e.keyspace, e.shard, len(r.Named().Rows)))
+	}
 	for _, uuidRow := range r.Named().Rows {
 		uuid := uuidRow["migration_uuid"].ToString()
+		log.Info(fmt.Sprintf("reviewQueuedMigrations: keyspace=%s shard=%s reviewing uuid=%s", e.keyspace, e.shard, uuid))
 		if err := e.reviewQueuedMigration(ctx, uuid, capableOf); err != nil {
+			log.Info(fmt.Sprintf("reviewQueuedMigrations: keyspace=%s shard=%s uuid=%s FAILED: %v", e.keyspace, e.shard, uuid, err))
 			e.failMigration(ctx, &schema.OnlineDDL{UUID: uuid}, err)
 		}
 	}
@@ -3643,6 +3651,7 @@ func (e *Executor) onMigrationCheckTick() {
 	}
 
 	ctx := context.Background()
+	log.Info(fmt.Sprintf("onMigrationCheckTick: keyspace=%s shard=%s", e.keyspace, e.shard))
 	if err := e.retryTabletFailureMigrations(ctx); err != nil {
 		log.Error(fmt.Sprint(err))
 	}
