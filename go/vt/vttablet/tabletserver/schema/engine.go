@@ -171,24 +171,22 @@ func (se *Engine) syncSidecarDB(ctx context.Context, conn *dbconnpool.DBConnecti
 	}(time.Now())
 
 	currentSidecarName := sidecar.GetName()
-	parser := se.env.Environment().Parser()
+	currentSidecarIdent := sidecar.GetIdentifier()
 
 	var exec sidecardb.Exec = func(ctx context.Context, query string, maxRows int, useDB bool) (*sqltypes.Result, error) {
 		if useDB {
-			_, err := conn.ExecuteFetch(sqlparser.BuildParsedQuery("use %s", sidecar.GetIdentifier()).Query, maxRows, false)
+			_, err := conn.ExecuteFetch(sqlparser.BuildParsedQuery("use %s", currentSidecarIdent).Query, maxRows, false)
 			if err != nil {
 				return nil, err
 			}
 		}
 		// sidecardb.Init uses sync.Once to load schema definitions, which bakes
-		// in _vt qualifiers from the first call. When per-shard sidecar names
-		// differ (e.g., in vtcombo), rewrite qualifiers to the current name.
+		// in the qualifier from the first call's sidecar.GetName(). When per-shard
+		// sidecar names differ (e.g., in vtcombo), the baked-in qualifier won't
+		// match the current shard's name. Rewrite any mismatched qualifiers by
+		// parsing and updating the AST.
 		if currentSidecarName != sidecar.DefaultName {
-			var err error
-			query, err = parser.ReplaceTableQualifiers(query, sidecar.DefaultName, currentSidecarName)
-			if err != nil {
-				return nil, err
-			}
+			query = rewriteSidecarDBQualifiers(se.env.Environment().Parser(), query, currentSidecarName)
 		}
 		return conn.ExecuteFetch(query, maxRows, true)
 	}
@@ -203,6 +201,32 @@ func (se *Engine) syncSidecarDB(ctx context.Context, conn *dbconnpool.DBConnecti
 	}
 	log.Info("syncSidecarDB done")
 	return nil
+}
+
+// rewriteSidecarDBQualifiers rewrites table qualifiers in a SQL statement to use
+// the given sidecar database name. In vtcombo, sidecardb.Init's sync.Once bakes
+// the first shard's sidecar name into schema definitions. Subsequent shards need
+// their DDLs rewritten to target the correct per-shard sidecar database.
+func rewriteSidecarDBQualifiers(parser *sqlparser.Parser, query, targetName string) string {
+	stmt, err := parser.Parse(query)
+	if err != nil {
+		return query
+	}
+	targetIdent := sqlparser.NewIdentifierCS(targetName)
+	rewritten := sqlparser.Rewrite(stmt, func(cursor *sqlparser.Cursor) bool {
+		if ct, ok := cursor.Node().(*sqlparser.CreateTable); ok {
+			if !ct.Table.Qualifier.IsEmpty() && ct.Table.Qualifier.String() != targetName {
+				ct.Table.Qualifier = targetIdent
+			}
+		}
+		if at, ok := cursor.Node().(*sqlparser.AlterTable); ok {
+			if !at.Table.Qualifier.IsEmpty() && at.Table.Qualifier.String() != targetName {
+				at.Table.Qualifier = targetIdent
+			}
+		}
+		return true
+	}, nil)
+	return sqlparser.String(rewritten)
 }
 
 // EnsureConnectionAndDB ensures that we can connect to mysql.
