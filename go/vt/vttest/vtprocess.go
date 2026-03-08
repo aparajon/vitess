@@ -209,7 +209,7 @@ const (
 var QueryServerArgs = []string{
 	"--queryserver-config-pool-size", "4",
 	"--queryserver-config-query-timeout", "300s",
-	"--queryserver-config-schema-reload-time", "60s",
+	"--queryserver-config-schema-reload-time", "2s",
 	"--queryserver-config-stream-pool-size", "4",
 	"--queryserver-config-transaction-cap", "4",
 	"--queryserver-config-txpool-timeout", "300s",
