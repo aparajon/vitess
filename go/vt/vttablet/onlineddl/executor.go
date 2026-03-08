@@ -272,6 +272,10 @@ func (e *Executor) InitDBConfig(keyspace, shard, dbName string) {
 	e.keyspace = keyspace
 	e.shard = shard
 	e.dbName = dbName
+	// Capture the sidecar DB name now (during tm.Start), when the global
+	// sidecar.GetName() still reflects this shard's value. In vtcombo, Open()
+	// is called later when the global may have been overwritten by another shard.
+	e.sidecarDBName = sidecar.GetName()
 }
 
 // Open opens database pool and initializes the schema
@@ -290,7 +294,6 @@ func (e *Executor) Open() error {
 	})
 	e.vreplicationLastError = make(map[string]*vterrors.LastError)
 
-	e.sidecarDBName = sidecar.GetName()
 	if e.sidecarDBName != sidecar.DefaultName {
 		e.execQuery = e.executeQueryWithSidecarDBReplacement
 	} else {
