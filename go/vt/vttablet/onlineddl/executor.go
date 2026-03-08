@@ -4716,14 +4716,22 @@ func (e *Executor) ShowMigrations(ctx context.Context, show *sqlparser.Show) (re
 	if showBasic.Command != sqlparser.VitessMigrations {
 		return nil, vterrors.Errorf(vtrpcpb.Code_INTERNAL, "[BUG] ShowMigrations expects a VitessMigrations command, got %+v. Statement: %s", showBasic.Command, sqlparser.String(show))
 	}
+	// In vtcombo, all tablets share the same _vt.schema_migrations table.
+	// Filter by this executor's keyspace/shard to prevent cross-tablet contamination
+	// (each executor should only return its own migrations).
+	ksFilter := fmt.Sprintf("keyspace='%s' AND shard='%s'", e.keyspace, e.shard)
+
 	whereExpr := ""
 	if showBasic.Filter != nil {
 		if showBasic.Filter.Filter != nil {
-			whereExpr = " where " + sqlparser.String(showBasic.Filter.Filter)
+			whereExpr = fmt.Sprintf(" where (%s) AND %s", sqlparser.String(showBasic.Filter.Filter), ksFilter)
 		} else if showBasic.Filter.Like != "" {
 			lit := sqlparser.String(sqlparser.NewStrLiteral(showBasic.Filter.Like))
-			whereExpr = fmt.Sprintf(" where migration_uuid LIKE %s OR migration_context LIKE %s OR migration_status LIKE %s", lit, lit, lit)
+			whereExpr = fmt.Sprintf(" where (migration_uuid LIKE %s OR migration_context LIKE %s OR migration_status LIKE %s) AND %s", lit, lit, lit, ksFilter)
 		}
+	}
+	if whereExpr == "" {
+		whereExpr = " where " + ksFilter
 	}
 	query := sqlparser.BuildParsedQuery(sqlShowMigrationsWhere, whereExpr).Query
 	return e.execQuery(ctx, query)
