@@ -216,6 +216,21 @@ func InitTabletMap(
 		return &internalTabletManagerClient{}
 	})
 
+	// vtcombo sidecar fix: if a previous run replaced _vt.schema_migrations with a
+	// VIEW, restore the original table so sidecardb.Init() (called during tablet
+	// creation below) can verify/update the schema normally.
+	if conn, err := mysqld.GetDbaConnection(ctx); err == nil {
+		result, err := conn.ExecuteFetch(
+			"SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA='_vt' AND TABLE_NAME='schema_migrations_data' AND TABLE_TYPE='BASE TABLE'", 1, false)
+		if err == nil && len(result.Rows) > 0 {
+			conn.ExecuteFetch("DROP VIEW IF EXISTS _vt.schema_migrations", 0, false)
+			conn.ExecuteFetch("TRUNCATE TABLE _vt.schema_migrations_data", 0, false)
+			conn.ExecuteFetch("RENAME TABLE _vt.schema_migrations_data TO _vt.schema_migrations", 0, false)
+			log.Info("vtcombo: restored _vt.schema_migrations table for sidecar init (restart)")
+		}
+		conn.Close()
+	}
+
 	// iterate through the keyspaces
 	wr := wrangler.New(env, logutil.NewConsoleLogger(), ts, nil)
 	var uid uint32 = 1
@@ -230,6 +245,50 @@ func InitTabletMap(
 	// Rebuild the SrvVSchema object
 	if err := ts.RebuildSrvVSchema(ctx, tpb.Cells); err != nil {
 		return 0, fmt.Errorf("RebuildVSchemaGraph failed: %v", err)
+	}
+
+	// vtcombo shares a single MySQL instance across all tablets, so the
+	// _vt.schema_migrations sidecar table is shared. This causes two problems:
+	// 1. The UNIQUE KEY on migration_uuid alone prevents multiple shards from
+	//    storing the same migration (vtgate sends the same UUID to every shard).
+	// 2. readMigration(uuid) has no shard filter, so shard B's executor finds
+	//    shard A's row and skips its own INSERT (idempotent re-submission path).
+	//
+	// Fix: widen the unique index and replace the table with a VIEW filtered by
+	// mysql_schema = (SELECT DATABASE()). Each executor's connection pool connects
+	// to its shard's database, so DATABASE() provides transparent per-shard isolation.
+	if len(tpb.Keyspaces) > 0 {
+		conn, err := mysqld.GetDbaConnection(ctx)
+		if err != nil {
+			log.Info(fmt.Sprintf("vtcombo: could not get DBA connection for sidecar fix: %v", err))
+		} else {
+			// Widen unique index to allow same UUID across different shards.
+			if _, err := conn.ExecuteFetch(
+				"ALTER TABLE _vt.schema_migrations DROP INDEX uuid_idx, ADD UNIQUE KEY uuid_idx (migration_uuid, shard(64))",
+				0, false); err != nil {
+				log.Info(fmt.Sprintf("vtcombo: could not widen uuid_idx: %v", err))
+			}
+			// Rename base table so we can create a VIEW with the original name.
+			if _, err := conn.ExecuteFetch(
+				"RENAME TABLE _vt.schema_migrations TO _vt.schema_migrations_data",
+				0, false); err != nil {
+				log.Info(fmt.Sprintf("vtcombo: could not rename schema_migrations: %v", err))
+			}
+			// Create per-shard-filtered VIEW. The subquery (SELECT DATABASE()) is
+			// evaluated at query time (unlike bare DATABASE() which MySQL pre-evaluates
+			// in VIEW definitions). Each executor pool connects to its shard's database
+			// (e.g. vt_testapp_sharded_-80), and mysql_schema stores the same value,
+			// so the filter provides transparent per-shard row isolation.
+			if _, err := conn.ExecuteFetch(
+				"CREATE SQL SECURITY INVOKER VIEW _vt.schema_migrations AS "+
+					"SELECT * FROM _vt.schema_migrations_data WHERE mysql_schema = (SELECT DATABASE())",
+				0, false); err != nil {
+				log.Info(fmt.Sprintf("vtcombo: could not create schema_migrations VIEW: %v", err))
+			} else {
+				log.Info("vtcombo: replaced _vt.schema_migrations with per-shard-filtered VIEW")
+			}
+			conn.Close()
+		}
 	}
 
 	// Register the tablet dialer for tablet server. main() forces the --tablet-protocol
