@@ -115,6 +115,12 @@ type Engine struct {
 	// production.
 	shortcircuit bool
 
+	// sidecarDBName is captured at InitDBConfig time from the global
+	// sidecar.GetName(). In vtcombo, multiple engines share a process and
+	// each may use a different sidecar DB; using the captured value avoids
+	// reading the global (which may have been overwritten by another tablet).
+	sidecarDBName string
+
 	env *vtenv.Environment
 }
 
@@ -155,11 +161,12 @@ func (vre *Engine) InitDBConfig(dbcfgs *dbconfigs.DBConfigs) {
 	if vre.dbClientFactoryFiltered != nil && vre.dbClientFactoryDba != nil {
 		return
 	}
+	vre.sidecarDBName = sidecar.GetName()
 	vre.dbClientFactoryFiltered = func() binlogplayer.DBClient {
-		return binlogplayer.NewDBClient(dbcfgs.FilteredWithDB(), vre.env.Parser())
+		return binlogplayer.NewDBClientWithSidecarName(dbcfgs.FilteredWithDB(), vre.env.Parser(), vre.sidecarDBName)
 	}
 	vre.dbClientFactoryDba = func() binlogplayer.DBClient {
-		return binlogplayer.NewDBClient(dbcfgs.DbaWithDB(), vre.env.Parser())
+		return binlogplayer.NewDBClientWithSidecarName(dbcfgs.DbaWithDB(), vre.env.Parser(), vre.sidecarDBName)
 	}
 	vre.dbName = dbcfgs.DBName
 }
@@ -392,7 +399,8 @@ func (vre *Engine) exec(query string, runAsAdmin bool) (*sqltypes.Result, error)
 	// Change the database to ensure that these events don't get
 	// replicated by another vreplication. This can happen when
 	// we reverse replication.
-	if _, err := dbClient.ExecuteFetch("use "+sidecar.GetIdentifier(), 1); err != nil {
+	sidecarIdent := "`" + vre.sidecarDBName + "`"
+	if _, err := dbClient.ExecuteFetch("use "+sidecarIdent, 1); err != nil {
 		return nil, err
 	}
 

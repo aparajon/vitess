@@ -170,9 +170,22 @@ func (se *Engine) syncSidecarDB(ctx context.Context, conn *dbconnpool.DBConnecti
 		log.Info(fmt.Sprintf("syncSidecarDB took %d ms", time.Since(start).Milliseconds()))
 	}(time.Now())
 
+	currentSidecarName := sidecar.GetName()
+	parser := se.env.Environment().Parser()
+
 	var exec sidecardb.Exec = func(ctx context.Context, query string, maxRows int, useDB bool) (*sqltypes.Result, error) {
 		if useDB {
 			_, err := conn.ExecuteFetch(sqlparser.BuildParsedQuery("use %s", sidecar.GetIdentifier()).Query, maxRows, false)
+			if err != nil {
+				return nil, err
+			}
+		}
+		// sidecardb.Init uses sync.Once to load schema definitions, which bakes
+		// in _vt qualifiers from the first call. When per-shard sidecar names
+		// differ (e.g., in vtcombo), rewrite qualifiers to the current name.
+		if currentSidecarName != sidecar.DefaultName {
+			var err error
+			query, err = parser.ReplaceTableQualifiers(query, sidecar.DefaultName, currentSidecarName)
 			if err != nil {
 				return nil, err
 			}

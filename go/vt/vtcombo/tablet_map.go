@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"strings"
 	"time"
 
 	"vitess.io/vitess/go/sqltypes"
@@ -133,7 +134,6 @@ func CreateTablet(
 	if err := tm.Start(tablet, nil); err != nil {
 		return err
 	}
-	log.Info(fmt.Sprintf("CreateTablet: keyspace=%s shard=%s dbname=%s tm.DBConfigs.DBName=%s", keyspace, shard, dbname, tm.DBConfigs.DBName))
 
 	if tabletType == topodatapb.TabletType_PRIMARY {
 		// Semi-sync has to be set to false, since we have 1 single backing MySQL
@@ -216,21 +216,6 @@ func InitTabletMap(
 		return &internalTabletManagerClient{}
 	})
 
-	// vtcombo sidecar fix: if a previous run replaced _vt.schema_migrations with a
-	// VIEW, restore the original table so sidecardb.Init() (called during tablet
-	// creation below) can verify/update the schema normally.
-	if conn, err := mysqld.GetDbaConnection(ctx); err == nil {
-		result, err := conn.ExecuteFetch(
-			"SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA='_vt' AND TABLE_NAME='schema_migrations_data' AND TABLE_TYPE='BASE TABLE'", 1, false)
-		if err == nil && len(result.Rows) > 0 {
-			conn.ExecuteFetch("DROP VIEW IF EXISTS _vt.schema_migrations", 0, false)
-			conn.ExecuteFetch("TRUNCATE TABLE _vt.schema_migrations_data", 0, false)
-			conn.ExecuteFetch("RENAME TABLE _vt.schema_migrations_data TO _vt.schema_migrations", 0, false)
-			log.Info("vtcombo: restored _vt.schema_migrations table for sidecar init (restart)")
-		}
-		conn.Close()
-	}
-
 	// iterate through the keyspaces
 	wr := wrangler.New(env, logutil.NewConsoleLogger(), ts, nil)
 	var uid uint32 = 1
@@ -245,50 +230,6 @@ func InitTabletMap(
 	// Rebuild the SrvVSchema object
 	if err := ts.RebuildSrvVSchema(ctx, tpb.Cells); err != nil {
 		return 0, fmt.Errorf("RebuildVSchemaGraph failed: %v", err)
-	}
-
-	// vtcombo shares a single MySQL instance across all tablets, so the
-	// _vt.schema_migrations sidecar table is shared. This causes two problems:
-	// 1. The UNIQUE KEY on migration_uuid alone prevents multiple shards from
-	//    storing the same migration (vtgate sends the same UUID to every shard).
-	// 2. readMigration(uuid) has no shard filter, so shard B's executor finds
-	//    shard A's row and skips its own INSERT (idempotent re-submission path).
-	//
-	// Fix: widen the unique index and replace the table with a VIEW filtered by
-	// mysql_schema = (SELECT DATABASE()). Each executor's connection pool connects
-	// to its shard's database, so DATABASE() provides transparent per-shard isolation.
-	if len(tpb.Keyspaces) > 0 {
-		conn, err := mysqld.GetDbaConnection(ctx)
-		if err != nil {
-			log.Info(fmt.Sprintf("vtcombo: could not get DBA connection for sidecar fix: %v", err))
-		} else {
-			// Widen unique index to allow same UUID across different shards.
-			if _, err := conn.ExecuteFetch(
-				"ALTER TABLE _vt.schema_migrations DROP INDEX uuid_idx, ADD UNIQUE KEY uuid_idx (migration_uuid, shard(64))",
-				0, false); err != nil {
-				log.Info(fmt.Sprintf("vtcombo: could not widen uuid_idx: %v", err))
-			}
-			// Rename base table so we can create a VIEW with the original name.
-			if _, err := conn.ExecuteFetch(
-				"RENAME TABLE _vt.schema_migrations TO _vt.schema_migrations_data",
-				0, false); err != nil {
-				log.Info(fmt.Sprintf("vtcombo: could not rename schema_migrations: %v", err))
-			}
-			// Create per-shard-filtered VIEW. The subquery (SELECT DATABASE()) is
-			// evaluated at query time (unlike bare DATABASE() which MySQL pre-evaluates
-			// in VIEW definitions). Each executor pool connects to its shard's database
-			// (e.g. vt_testapp_sharded_-80), and mysql_schema stores the same value,
-			// so the filter provides transparent per-shard row isolation.
-			if _, err := conn.ExecuteFetch(
-				"CREATE SQL SECURITY INVOKER VIEW _vt.schema_migrations AS "+
-					"SELECT * FROM _vt.schema_migrations_data WHERE mysql_schema = (SELECT DATABASE())",
-				0, false); err != nil {
-				log.Info(fmt.Sprintf("vtcombo: could not create schema_migrations VIEW: %v", err))
-			} else {
-				log.Info("vtcombo: replaced _vt.schema_migrations with per-shard-filtered VIEW")
-			}
-			conn.Close()
-		}
 	}
 
 	// Register the tablet dialer for tablet server. main() forces the --tablet-protocol
@@ -406,6 +347,14 @@ func CreateKs(
 			return 0, fmt.Errorf("CreateShard(%v:%v) failed: %v", keyspace, shard, err)
 		}
 
+		// Set shard-specific sidecar DB name in keyspace topo record so that
+		// each shard's tablets get their own sidecar database, avoiding
+		// conflicts when multiple shards share a single MySQL instance.
+		sidecarName := shardSidecarDBName(keyspace, shard)
+		if err := setKeyspaceSidecarDBName(ctx, ts, keyspace, sidecarName); err != nil {
+			return 0, fmt.Errorf("set sidecar DB name for %v/%v: %v", keyspace, shard, err)
+		}
+
 		for _, cell := range tpb.Cells {
 			dbname := spb.DbNameOverride
 			if dbname == "" {
@@ -495,6 +444,35 @@ func CreateKs(
 		return 0, fmt.Errorf("cannot rebuild %v: %v", keyspace, err)
 	}
 	return uid, nil
+}
+
+// shardSidecarDBName returns a shard-specific sidecar database name.
+// In vtcombo, all shards share one MySQL instance, so each shard needs
+// its own sidecar DB to avoid conflicts in tables like schema_migrations
+// and vreplication.
+func shardSidecarDBName(keyspace, shard string) string {
+	safeShard := strings.NewReplacer("-", "_", "/", "_").Replace(shard)
+	return fmt.Sprintf("_vt_%s_%s", keyspace, safeShard)
+}
+
+// setKeyspaceSidecarDBName updates the keyspace topo record with a custom
+// sidecar database name. When tablets start, they read this value and use
+// it instead of the default "_vt".
+func setKeyspaceSidecarDBName(ctx context.Context, ts *topo.Server, keyspace, name string) error {
+	getlockctx, cancel := context.WithTimeout(ctx, topo.RemoteOperationTimeout)
+	defer cancel()
+	lockctx, unlock, err := ts.LockKeyspace(getlockctx, keyspace, "setting per-shard sidecar DB name")
+	if err != nil {
+		return err
+	}
+	defer unlock(&err)
+
+	ki, err := ts.GetKeyspace(lockctx, keyspace)
+	if err != nil {
+		return err
+	}
+	ki.SidecarDbName = name
+	return ts.UpdateKeyspace(lockctx, ki)
 }
 
 //

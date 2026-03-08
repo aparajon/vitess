@@ -140,9 +140,10 @@ type Executor struct {
 	requestGCChecksFunc   func()
 	tabletAlias           *topodatapb.TabletAlias
 
-	keyspace string
-	shard    string
-	dbName   string
+	keyspace       string
+	shard          string
+	dbName         string
+	sidecarDBName  string
 
 	initMutex      sync.Mutex
 	migrationMutex sync.Mutex
@@ -254,7 +255,7 @@ func (e *Executor) executeQueryWithSidecarDBReplacement(ctx context.Context, que
 	defer conn.Recycle()
 
 	// Replace any provided sidecar DB qualifiers with the correct one.
-	uq, err := e.env.Environment().Parser().ReplaceTableQualifiers(query, sidecar.DefaultName, sidecar.GetName())
+	uq, err := e.env.Environment().Parser().ReplaceTableQualifiers(query, sidecar.DefaultName, e.sidecarDBName)
 	if err != nil {
 		return nil, err
 	}
@@ -289,13 +290,13 @@ func (e *Executor) Open() error {
 	})
 	e.vreplicationLastError = make(map[string]*vterrors.LastError)
 
-	if sidecar.GetName() != sidecar.DefaultName {
+	e.sidecarDBName = sidecar.GetName()
+	if e.sidecarDBName != sidecar.DefaultName {
 		e.execQuery = e.executeQueryWithSidecarDBReplacement
 	} else {
 		e.execQuery = e.executeQuery
 	}
 
-	log.Info(fmt.Sprintf("onlineDDL Executor Open(): keyspace=%s shard=%s dbName=%s config.DB.DBName=%s", e.keyspace, e.shard, e.dbName, e.env.Config().DB.DBName))
 	e.pool.Open(e.env.Config().DB.AppWithDB(), e.env.Config().DB.DbaWithDB(), e.env.Config().DB.AppDebugWithDB())
 	e.ticks.Start(e.onMigrationCheckTick)
 	e.triggerNextCheckInterval()
@@ -466,7 +467,6 @@ func (e *Executor) getCreateTableStatement(ctx context.Context, tableName string
 // executeDirectly runs a DDL query directly on the backend MySQL server.
 // This is primarily used for CREATE/DROP/RENAME TABLE statements.
 func (e *Executor) executeDirectly(ctx context.Context, onlineDDL *schema.OnlineDDL, acceptableMySQLErrorCodes ...sqlerror.ErrorCode) (acceptableErrorCodeFound bool, err error) {
-	log.Info(fmt.Sprintf("onlineDDL executeDirectly: keyspace=%s shard=%s dbName=%s config.DB.DBName=%s table=%s", e.keyspace, e.shard, e.dbName, e.env.Config().DB.DBName, onlineDDL.Table))
 	conn, err := dbconnpool.NewDBConnection(ctx, e.env.Config().DB.DbaWithDB())
 	if err != nil {
 		return false, err
@@ -1539,7 +1539,7 @@ func (e *Executor) readMigration(ctx context.Context, uuid string) (onlineDDL *s
 
 // readPendingMigrationsUUIDs returns UUIDs for migrations in pending state (queued/ready/running)
 func (e *Executor) readPendingMigrationsUUIDs(ctx context.Context) (uuids []string, err error) {
-	r, err := e.execQuery(ctx, fmt.Sprintf(sqlSelectPendingMigrations, e.keyspace, e.shard))
+	r, err := e.execQuery(ctx, sqlSelectPendingMigrations)
 	if err != nil {
 		return uuids, err
 	}
@@ -1739,12 +1739,9 @@ func (e *Executor) scheduleNextMigration(ctx context.Context) error {
 
 	var onlyScheduleOneMigration sync.Once
 
-	r, err := e.execQuery(ctx, fmt.Sprintf(sqlSelectQueuedMigrations, e.keyspace, e.shard))
+	r, err := e.execQuery(ctx, sqlSelectQueuedMigrations)
 	if err != nil {
 		return vterrors.Wrapf(err, "in scheduleNextMigration()")
-	}
-	if len(r.Named().Rows) > 0 {
-		log.Info(fmt.Sprintf("scheduleNextMigration: keyspace=%s shard=%s found %d reviewed queued migrations", e.keyspace, e.shard, len(r.Named().Rows)))
 	}
 	for _, row := range r.Named().Rows {
 		uuid := row["migration_uuid"].ToString()
@@ -1946,19 +1943,14 @@ func (e *Executor) reviewQueuedMigrations(ctx context.Context) error {
 	e.migrationMutex.Lock()
 	defer e.migrationMutex.Unlock()
 
-	r, err := e.execQuery(ctx, fmt.Sprintf(sqlSelectQueuedUnreviewedMigrations, e.keyspace, e.shard))
+	r, err := e.execQuery(ctx, sqlSelectQueuedUnreviewedMigrations)
 	if err != nil {
 		return err
 	}
 
-	if len(r.Named().Rows) > 0 {
-		log.Info(fmt.Sprintf("reviewQueuedMigrations: keyspace=%s shard=%s found %d unreviewed migrations", e.keyspace, e.shard, len(r.Named().Rows)))
-	}
 	for _, uuidRow := range r.Named().Rows {
 		uuid := uuidRow["migration_uuid"].ToString()
-		log.Info(fmt.Sprintf("reviewQueuedMigrations: keyspace=%s shard=%s reviewing uuid=%s", e.keyspace, e.shard, uuid))
 		if err := e.reviewQueuedMigration(ctx, uuid, capableOf); err != nil {
-			log.Info(fmt.Sprintf("reviewQueuedMigrations: keyspace=%s shard=%s uuid=%s FAILED: %v", e.keyspace, e.shard, uuid, err))
 			e.failMigration(ctx, &schema.OnlineDDL{UUID: uuid}, err)
 		}
 	}
@@ -1987,7 +1979,7 @@ func (e *Executor) validateMigrationRevertible(ctx context.Context, revertMigrat
 	}
 	{
 		// Validation: see if there's a pending migration on this table:
-		r, err := e.execQuery(ctx, fmt.Sprintf(sqlSelectPendingMigrations, e.keyspace, e.shard))
+		r, err := e.execQuery(ctx, sqlSelectPendingMigrations)
 		if err != nil {
 			return err
 		}
@@ -2863,7 +2855,7 @@ func (e *Executor) getNonConflictingMigration(ctx context.Context) (*schema.Onli
 	if err != nil {
 		return nil, err
 	}
-	r, err := e.execQuery(ctx, fmt.Sprintf(sqlSelectReadyMigrations, e.keyspace, e.shard))
+	r, err := e.execQuery(ctx, sqlSelectReadyMigrations)
 	if err != nil {
 		return nil, err
 	}
@@ -3180,7 +3172,7 @@ func (e *Executor) reviewRunningMigrations(ctx context.Context) (countRunnning i
 		}
 	}
 
-	r, err := e.execQuery(ctx, fmt.Sprintf(sqlSelectRunningMigrations, e.keyspace, e.shard))
+	r, err := e.execQuery(ctx, sqlSelectRunningMigrations)
 	if err != nil {
 		return countRunnning, cancellable, err
 	}
@@ -3390,7 +3382,7 @@ func (e *Executor) monitorStaleMigrations(ctx context.Context) error {
 
 	var maxStaleMinutes int64
 
-	query, err := sqlparser.ParseAndBind(fmt.Sprintf(sqlSelectStaleMigrations, e.keyspace, e.shard),
+	query, err := sqlparser.ParseAndBind(sqlSelectStaleMigrations,
 		sqltypes.Int64BindVariable(staleMigrationWarningMinutes),
 	)
 	if err != nil {
@@ -3425,7 +3417,7 @@ func (e *Executor) reviewStaleMigrations(ctx context.Context) error {
 	e.migrationMutex.Lock()
 	defer e.migrationMutex.Unlock()
 
-	query, err := sqlparser.ParseAndBind(fmt.Sprintf(sqlSelectStaleMigrations, e.keyspace, e.shard),
+	query, err := sqlparser.ParseAndBind(sqlSelectStaleMigrations,
 		sqltypes.Int64BindVariable(staleMigrationFailMinutes),
 	)
 	if err != nil {
@@ -3651,7 +3643,6 @@ func (e *Executor) onMigrationCheckTick() {
 	}
 
 	ctx := context.Background()
-	log.Info(fmt.Sprintf("onMigrationCheckTick: keyspace=%s shard=%s", e.keyspace, e.shard))
 	if err := e.retryTabletFailureMigrations(ctx); err != nil {
 		log.Error(fmt.Sprint(err))
 	}
@@ -4482,7 +4473,7 @@ func (e *Executor) LaunchMigrations(ctx context.Context) (result *sqltypes.Resul
 	if err != nil {
 		return result, err
 	}
-	r, err := e.execQuery(ctx, fmt.Sprintf(sqlSelectQueuedMigrations, e.keyspace, e.shard))
+	r, err := e.execQuery(ctx, sqlSelectQueuedMigrations)
 	if err != nil {
 		return result, err
 	}
@@ -4549,7 +4540,7 @@ func (e *Executor) submitCallbackIfNonConflicting(
 		e.migrationMutex.Lock()
 		defer e.migrationMutex.Unlock()
 
-		rs, err := e.execQuery(ctx, fmt.Sprintf(sqlSelectPendingMigrations, e.keyspace, e.shard))
+		rs, err := e.execQuery(ctx, sqlSelectPendingMigrations)
 		if err != nil {
 			return err
 		}
@@ -4725,22 +4716,14 @@ func (e *Executor) ShowMigrations(ctx context.Context, show *sqlparser.Show) (re
 	if showBasic.Command != sqlparser.VitessMigrations {
 		return nil, vterrors.Errorf(vtrpcpb.Code_INTERNAL, "[BUG] ShowMigrations expects a VitessMigrations command, got %+v. Statement: %s", showBasic.Command, sqlparser.String(show))
 	}
-	// In vtcombo, all tablets share the same _vt.schema_migrations table.
-	// Filter by this executor's keyspace/shard to prevent cross-tablet contamination
-	// (each executor should only return its own migrations).
-	ksFilter := fmt.Sprintf("keyspace='%s' AND shard='%s'", e.keyspace, e.shard)
-
 	whereExpr := ""
 	if showBasic.Filter != nil {
 		if showBasic.Filter.Filter != nil {
-			whereExpr = fmt.Sprintf(" where (%s) AND %s", sqlparser.String(showBasic.Filter.Filter), ksFilter)
+			whereExpr = " where " + sqlparser.String(showBasic.Filter.Filter)
 		} else if showBasic.Filter.Like != "" {
 			lit := sqlparser.String(sqlparser.NewStrLiteral(showBasic.Filter.Like))
-			whereExpr = fmt.Sprintf(" where (migration_uuid LIKE %s OR migration_context LIKE %s OR migration_status LIKE %s) AND %s", lit, lit, lit, ksFilter)
+			whereExpr = fmt.Sprintf(" where migration_uuid LIKE %s OR migration_context LIKE %s OR migration_status LIKE %s", lit, lit, lit)
 		}
-	}
-	if whereExpr == "" {
-		whereExpr = " where " + ksFilter
 	}
 	query := sqlparser.BuildParsedQuery(sqlShowMigrationsWhere, whereExpr).Query
 	return e.execQuery(ctx, query)
